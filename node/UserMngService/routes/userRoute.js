@@ -1,12 +1,12 @@
-import { Router } from "express";
-import { login, register } from "../controller/userController.js";
+/** Routes of the User service, mounted at /api/user. */
+import { Router } from 'express';
 
-const router = Router();
-
-// Registration endpoint
-router.post("/register", register)
-
-// Login endpoint
-router.post("/login", login)
-
-export default router;
+/**
+ * @param {{ register: Function, login: Function }} controller handlers from createUserController
+ */
+export function createUserRouter(controller) {
+  const router = Router();
+  router.post('/register', controller.register);
+  router.post('/login', controller.login);
+  return router;
+}

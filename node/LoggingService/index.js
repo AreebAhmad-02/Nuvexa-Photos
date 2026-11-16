@@ -1,38 +1,15 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const fs = require("fs");
-const path = require("path");
+/** Entry point: starts the logging service and writes events to logs.txt. */
+import { appendFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const app = express();
-const port = 8004;
-const logFilePath = path.join(__dirname, "logs.txt");
+import { createApp } from './app.js';
 
-// Middleware to parse JSON request bodies
-app.use(bodyParser.json());
+const PORT = Number(process.env.PORT ?? 8004);
+const LOG_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'logs.txt');
 
-// Endpoint to receive log messages via POST request
-app.post("/log", (req, res) => {
-  const { message } = req.body;
+const app = createApp({ appendLog: (line) => appendFile(LOG_FILE, line) });
 
-  if (!message) {
-    return res.status(400).json({ error: "Message is required" });
-  }
-
-  const logEntry = `${new Date().toISOString()} - ${message}\n`;
-
-  // Append the log entry to the file
-  fs.appendFile(logFilePath, logEntry, (err) => {
-    if (err) {
-      console.error("Error writing to log file:", err);
-      return res.status(500).json({ error: "Internal Server Error" });
-    }
-
-    console.log("Log entry added:", logEntry);
-    res.json({ message: "Log entry added successfully" });
-  });
-});
-
-// Start the server
-app.listen(port, () => {
-  console.log(`Logging microservice is running on port ${port}`);
+app.listen(PORT, () => {
+  console.log(`Logging service running on port ${PORT}`);
 });

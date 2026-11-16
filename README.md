@@ -176,3 +176,35 @@ To ensure the scalability and performance of the microservices, load testing can
    * Note: Ensure that the load testing is performed in a controlled environment to avoid impacting the production system. Always monitor system performance during the test
 
 
+
+## Code structure
+
+Every backend service in `node/` follows the same layout:
+
+| File | Role |
+|------|------|
+| `index.js` | Entry point: reads settings from the environment, connects to MongoDB, starts the server |
+| `app.js` | Builds the Express app from its dependencies (database models, other services, Cloudinary) |
+| `controller/` | Request handlers, written as factories that receive their dependencies |
+| `routes/` | URL routes |
+| `model/` or `models/` | MongoDB schemas and data-access functions |
+| `logClient.js` | Sends events to the Logging service; a logging failure never breaks a request |
+| `test/` | Unit tests with in-memory fakes, so no database or network is needed |
+
+Because dependencies are passed in rather than created inside the handlers, each service can be
+tested on its own and swapped to different infrastructure without changing its logic.
+
+## Configuration
+
+Secrets are never stored in the code. Each service has a `.env.example` listing the settings it
+needs (MongoDB URL, Cloudinary credentials, other services' URLs, storage limits). Set them as
+environment variables, for example through a Kubernetes Secret, or in a local `.env` file that is
+not committed.
+
+## Running the tests
+
+```bash
+cd node/PhotosMngService   # or any other backend service
+npm install
+npm test                   # uses Node's built-in test runner
+```

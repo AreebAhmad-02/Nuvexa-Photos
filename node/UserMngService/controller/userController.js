@@ -1,68 +1,69 @@
-import User from "../model/user.js";
-import bcrypt from "bcrypt";
-import axios from "axios";
+/**
+ * Request handlers for registration and login.
+ * Dependencies are passed in, so the handlers can be tested without a database.
+ */
 
-const LOG_SERVICE_URL = "http://loggingservice-srv:8004/log"; // Replace with the actual URL of your log service
+const SALT_ROUNDS = 10;
+const DUPLICATE_KEY_ERROR = 11000; // MongoDB error code for a unique-index violation
 
-// Registration endpoint
-export const register = async (req, res) => {
-  try {
-    const { email, name, password } = req.body;
+/** Return the fields that are safe to send to the client (never the password hash). */
+export const toPublicUser = (user) => ({ _id: user._id, name: user.name, email: user.email });
 
-    // Hash the password before storing it
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const newUser = new User({ name, email, password: hashedPassword });
-    await newUser.save();
-
-    // Log registration event
-    await logToService("User registered", `User ${email} registered successfully`);
-
-    res.status(201).json({ message: "User registered successfully" });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Internal server error" });
-  }
-};
-
-// Login endpoint
-export const login = async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    const user = await User.findOne({ email });
-
-    if (!user) {
-      // Log unsuccessful login event
-      await logToService("Login failed", `Login attempt for user ${email} failed - User not found`);
-
-      return res.status(404).json({ message: "User not found" });
+/**
+ * @param {object} deps
+ * @param {import('mongoose').Model} deps.User user model
+ * @param {(password: string, rounds: number) => Promise<string>} deps.hash
+ * @param {(password: string, hashed: string) => Promise<boolean>} deps.compare
+ * @param {(event: string, message: string) => Promise<void>} deps.log
+ */
+export function createUserController({ User, hash, compare, log }) {
+  /** POST /register  body: { name, email, password } */
+  const register = async (req, res) => {
+    const { name, email, password } = req.body ?? {};
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Email and password are required' });
     }
 
-    const isPasswordValid = await bcrypt.compare(password, user.password);
+    try {
+      const hashedPassword = await hash(password, SALT_ROUNDS);
+      await User.create({ name, email, password: hashedPassword });
+      await log('User registered', `User ${email} registered successfully`);
+      return res.status(201).json({ message: 'User registered successfully' });
+    } catch (error) {
+      if (error.code === DUPLICATE_KEY_ERROR) {
+        return res.status(409).json({ message: 'Email is already registered' });
+      }
+      console.error(error);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+  };
 
-    if (!isPasswordValid) {
-      // Log unsuccessful login event
-      await logToService("Login failed", `Login attempt for user ${email} failed - Invalid password`);
-
-      return res.status(401).json({ message: "Invalid password" });
+  /** POST /login  body: { email, password } -> { data: { _id, name, email } } */
+  const login = async (req, res) => {
+    const { email, password } = req.body ?? {};
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Email and password are required' });
     }
 
-    // Log successful login event
-    await logToService("Login successful", `User ${email} logged in successfully`);
+    try {
+      const user = await User.findOne({ email });
+      if (!user) {
+        await log('Login failed', `Login attempt for ${email} failed: user not found`);
+        return res.status(404).json({ message: 'User not found' });
+      }
 
-    res.status(200).json({ data: user });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Internal server error" });
-  }
-};
+      if (!(await compare(password, user.password))) {
+        await log('Login failed', `Login attempt for ${email} failed: invalid password`);
+        return res.status(401).json({ message: 'Invalid password' });
+      }
 
-// Helper function to send log events to the logging microservice
-const logToService = async (event, message) => {
-  try {
-    await axios.post(LOG_SERVICE_URL, { event, message });
-  } catch (error) {
-    console.error("Error logging to service:", error.message);
-  }
-};
+      await log('Login successful', `User ${email} logged in successfully`);
+      return res.status(200).json({ data: toPublicUser(user) });
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+  };
+
+  return { register, login };
+}

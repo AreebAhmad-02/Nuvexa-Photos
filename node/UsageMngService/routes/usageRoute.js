@@ -1,13 +1,11 @@
-import { createNewUsage, usageByUserId, updatingUsageByUserId } from '../controller/usageController.js';
-import express from 'express';
+/** Routes of the Usage service, mounted at /api/usage. */
+import { Router } from 'express';
 
-const router = express.Router(); 
-
-router.get('/user/:userId', usageByUserId);
-
-router.put('/user/:userId', updatingUsageByUserId);
-
-router.post('/', createNewUsage);
-
-
-export default router;
+/** @param {object} controller handlers from createUsageController */
+export function createUsageRouter(controller) {
+  const router = Router();
+  router.get('/user/:userId', controller.getByUser);
+  router.put('/user/:userId', controller.updateByUser);
+  router.post('/', controller.create);
+  return router;
+}

@@ -1,203 +1,147 @@
-import { v2 as cloudinary } from "cloudinary";
+/**
+ * Photos API: upload, list and delete a user's photos.
+ *
+ * Every upload is checked against two limits kept by other services: total storage
+ * (Storage service) and bytes uploaded today (Usage service). The counters are only
+ * increased after the file is safely stored, so a failed upload never uses up quota.
+ * All dependencies are passed in, so the routes can be tested without real services.
+ */
+import { Router } from 'express';
+import multer from 'multer';
 
-import { Router } from "express";
-import multer from "multer";
-import axios from "axios";
-import Photos from "../models/photos.js";
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB per file
 
-const router = Router();
+/** Format a byte count for messages, e.g. 10485760 -> "10 MB". */
+export const formatMB = (bytes) => `${Math.round(bytes / (1024 * 1024))} MB`;
 
-const LOGGING_API_URL = 'http://loggingservice-srv:8004/log';
+/**
+ * @param {object} deps
+ * @param {import('mongoose').Model} deps.Photos photo metadata model
+ * @param {{ get: Function, set: Function }} deps.storage total-storage counter (quotaClient)
+ * @param {{ get: Function, set: Function }} deps.usage daily-usage counter (quotaClient)
+ * @param {{ upload: Function, remove: Function }} deps.media file store (mediaStore)
+ * @param {{ storage: number, dailyUsage: number }} deps.limits limits in bytes
+ * @param {(event: string, message: string) => Promise<void>} deps.log
+ */
+export function createPhotosRouter({ Photos, storage, usage, media, limits, log }) {
+  const router = Router();
+  const upload = multer({ limits: { fileSize: MAX_FILE_BYTES } }).single('image');
 
-// Helper function to send log events to the logging API
-const logToApi = async (event, message) => {
-  try {
-    await axios.post(LOGGING_API_URL, { event, message });
-  } catch (error) {
-    console.error('Error logging to API:', error.message);
-  }
-};
-
-// Multer middleware for handling file uploads
-const upload = multer({
-    limits: { fileSize: 10485760 }, // File size limit (10MB)
-  }).single("image");
-
-//cloudinary configuration
-cloudinary.config({
-    cloud_name: "deragsdak",
-    api_key: "487494414134748",
-    api_secret: "uK9ai6Q4tSpvoz_uYSaYmrYpjxQ",
-  })
-// ImageUpload endpoint
-router.post("/upload", upload, async (req, res) => {
-  console.log(req.file);
-  //nothing to upload
-    if (!req.file) {
-      await logToApi('Image upload failed', 'No file uploaded');
-      return res.status(400).json({ error: "No file uploaded" });
+  /** POST /upload  multipart form: image (file), userId */
+  router.post('/upload', upload, async (req, res) => {
+    const { file } = req;
+    const { userId } = req.body ?? {};
+    if (!file) {
+      await log('Image upload failed', 'No file uploaded');
+      return res.status(400).json({ status: false, msg: 'No file uploaded' });
     }
-  
-    //sending http request to storage service
-    const totalSize = req.file.size;
-    const user = req.body.userId;
-    // Update user's storage
-  let userStorage;
-  //getting user storage
-    userStorage = await axios.get(
-      `${process.env.STORAGE_SERVICE_URL}/api/storage/user/${user}`
-    );
-  //storage is 0
-    if (!userStorage.data.data) {
-      userStorage = await axios.post(
-        `${process.env.STORAGE_SERVICE_URL}/api/storage/`,
-        { totalStorage: 0, user }
-      );
+    if (!userId) {
+      return res.status(400).json({ status: false, msg: 'userId is required' });
     }
-  //otherwise
-    if (
-      userStorage.data.data.totalStorage + totalSize >
-      process.env.STORAGE_LIMIT
-    ) {
-      return res
-        .status(500)
-        .json({
-          status: false,
-          msg: "Limit Exeeded. Total storage limit is 10MB",
-        });
-    }
-  
-    // update user's daily usage
-    let userDailyUsage;
-    userDailyUsage = await axios.get(
-      `${process.env.USAGE_SERVICE_URL}/api/usage/user/${user}`
-    );
-    if (!userDailyUsage.data.data) {
-      userDailyUsage = await axios.post(
-        `${process.env.USAGE_SERVICE_URL}/api/usage/`,
-        { totalUsage: 0, user }
-      );
-    }
-    if (
-      userDailyUsage.data.data.totalUsage + totalSize >
-      process.env.DAILY_USAGE_LIMIT
-    ) {
-      return res
-        .status(500)
-        .json({ status: false, msg: "Limit Exeeded. Daily usage limit is 25MB" });
-    }
-  
-    //sending updating requestes
-    const newTotalStorage = userStorage.data.data.totalStorage + totalSize;
-    await axios.put(
-      `${process.env.STORAGE_SERVICE_URL}/api/storage/user/${user}`,
-      { totalStorage: newTotalStorage }
-    );
-  
-    const newTotalUsage = userDailyUsage.data.data.totalUsage + totalSize;
-    await axios.put(`${process.env.USAGE_SERVICE_URL}/api/usage/user/${user}`, {
-      totalUsage: newTotalUsage,
-    });
-  
-    const b64 = req.file.buffer.toString("base64");
-    const dataURI = "data:" + req.file.mimetype + ";base64," + b64;
-  
+
+    let storedBytes;
+    let usedToday;
     try {
-      const result = await cloudinary.uploader.upload(dataURI, {
-        folder: "RAAFZ",
+      [storedBytes, usedToday] = await Promise.all([storage.get(userId), usage.get(userId)]);
+    } catch (error) {
+      console.error('Quota services unavailable:', error.message);
+      return res.status(502).json({ status: false, msg: 'Could not check your storage limits' });
+    }
+
+    if (storedBytes + file.size > limits.storage) {
+      return res.status(403).json({
+        status: false,
+        msg: `Limit exceeded. Total storage limit is ${formatMB(limits.storage)}`,
       });
-  
-      // Save image URL and public ID in the database
-      const newImage = new Photos({
-        photoName: req.file.originalname,
-        photoSize: req.file.size,
-        url: result.url,
-        publicId: result.public_id,
-        userId: req.body.userId,
+    }
+    if (usedToday + file.size > limits.dailyUsage) {
+      return res.status(403).json({
+        status: false,
+        msg: `Limit exceeded. Daily upload limit is ${formatMB(limits.dailyUsage)}`,
       });
-  
-      await newImage.save();
+    }
 
-      res.json({ file: newImage, message: "Image uploaded successfully" });
-      await logToApi('Image upload successful', `Image uploaded successfully for user ID ${req.body.userId}`);
+    let photo;
+    try {
+      const { url, publicId } = await media.upload(file);
+      photo = await Photos.create({
+        photoName: file.originalname,
+        photoSize: file.size,
+        url,
+        publicId,
+        userId,
+      });
     } catch (error) {
-      console.error("Cloudinary upload error:", error);
-      res.status(500).json({ error: "Internal Server Error" });
+      console.error('Upload failed:', error);
+      await log('Image upload failed', `Upload failed for user ID ${userId}`);
+      return res.status(500).json({ status: false, msg: 'Upload failed, please try again' });
+    }
+
+    try {
+      await Promise.all([
+        storage.set(userId, storedBytes + file.size),
+        usage.set(userId, usedToday + file.size),
+      ]);
+    } catch (error) {
+      // The photo is saved; report the counter problem without failing the upload.
+      console.error('Could not update quota counters:', error.message);
+    }
+
+    await log('Image upload successful', `Image uploaded for user ID ${userId}`);
+    return res.json({ file: photo, message: 'Image uploaded successfully' });
+  });
+
+  /** GET / : every photo's metadata (admin and debugging use). */
+  router.get('/', async (req, res) => {
+    try {
+      const photos = await Photos.find();
+      return res.json(photos);
+    } catch (error) {
+      console.error('Error retrieving images:', error);
+      return res.status(500).json({ error: 'Internal Server Error' });
     }
   });
 
-
-
-  // GetAllImages endpoint
-router.get("/", async (req, res) => {
+  /** GET /user/:userId : one user's photos. */
+  router.get('/user/:userId', async (req, res) => {
+    const { userId } = req.params;
     try {
-      // Retrieve all images from the database
-      const images = await Photos.find();
-      await logToApi('Retrieve all images', 'All images retrieved successfully');
-      res.json(images);
+      const photos = await Photos.find({ userId });
+      await log('Retrieve images by user ID', `Images retrieved for user ID ${userId}`);
+      return res.json(photos);
     } catch (error) {
-      console.error("Error retrieving images:", error);
-      await logToApi('Retrieve all images failed', 'Internal Server Error');
-      res.status(500).json({ error: "Internal Server Error" });
+      console.error('Error retrieving images:', error);
+      await log('Retrieve images by user ID failed', `Failed for user ID ${userId}`);
+      return res.status(500).json({ error: 'Internal Server Error' });
     }
   });
-  
-  
-router.get("/user/:userId", async (req, res) => {
-    try {
-      // Retrieve userId from request parameters
-      const userId = req.params.userId;
-  
-      // Retrieve images based on userId from the database
-      const images = await Photos.find({ userId });
-      await logToApi('Retrieve images by user ID', `Images retrieved successfully for user ID ${userId}`);
-      res.json(images);
-    } catch (error) {
-      console.error("Error retrieving images:", error);
-      await logToApi('Retrieve images by user ID failed', 'Internal Server Error');
-      res.status(500).json({ error: "Internal Server Error" });
-    }
-  });
-  
 
-  // DeleteImage endpoint
-router.delete("/:id", async (req, res) => {
-    const imageId = req.params.id;
-  
+  /** DELETE /:id : remove a photo and give its bytes back to the user's storage. */
+  router.delete('/:id', async (req, res) => {
     try {
-      // Find the image by ID
-      const image = await Photos.findById(imageId);
-        
-      if (!image) {
-        return res.status(404).json({ error: "Image not found" });
+      const photo = await Photos.findById(req.params.id);
+      if (!photo) {
+        return res.status(404).json({ error: 'Image not found' });
       }
-  
-      // Delete the image from Cloudinary
-      await cloudinary.uploader.destroy(image.publicId);
-  
-      // Delete the image from the database
-      await Photos.findByIdAndDelete(imageId);
-  
-      // Update user's storage
-      const userStorage = await axios.get(
-        `${process.env.STORAGE_SERVICE_URL}/api/storage/user/${image.userId}`
-      );
-      const totalSize = image.photoSize;
-      console.log(totalSize);
-      console.log("image", image);
-      const newTotalStorage = userStorage.data.data.totalStorage - totalSize;
-      await axios.put(
-        `${process.env.STORAGE_SERVICE_URL}/api/storage/user/${image.userId}`,
-        { totalStorage: newTotalStorage }
-      );
-      await logToApi('Image deletion successful', `Image deleted successfully for user ID ${image.userId}`);
-      res.json({ message: "Image deleted successfully" });
+
+      await media.remove(photo.publicId);
+      await Photos.findByIdAndDelete(photo._id);
+
+      try {
+        const storedBytes = await storage.get(photo.userId);
+        await storage.set(photo.userId, Math.max(0, storedBytes - photo.photoSize));
+      } catch (error) {
+        console.error('Could not update storage after delete:', error.message);
+      }
+
+      await log('Image deletion successful', `Image deleted for user ID ${photo.userId}`);
+      return res.json({ message: 'Image deleted successfully' });
     } catch (error) {
-      console.error("Error deleting image:", error);
-      await logToApi('Image deletion failed', 'Internal Server Error');
-      res.status(500).json({ error: "Internal Server Error" });
+      console.error('Error deleting image:', error);
+      await log('Image deletion failed', 'Internal Server Error');
+      return res.status(500).json({ error: 'Internal Server Error' });
     }
   });
-  
 
-export default router;
+  return router;
+}
