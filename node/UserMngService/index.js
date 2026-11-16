@@ -1,30 +1,32 @@
-import express from "express";
-import bodyParser from "body-parser";
-import cors from "cors";
-import mongoose from "mongoose";
-const app = express();
-const port = 8000;
+/** Entry point: connects to MongoDB and starts the User service. */
+import 'dotenv/config';
 
-//configure
-app.use(cors());
+import bcrypt from 'bcrypt';
+import mongoose from 'mongoose';
 
-// Connect to MongoDB
-mongoose.connect("");
-const db = mongoose.connection;
+import { createApp } from './app.js';
+import { createLogger } from './logClient.js';
+import User from './model/user.js';
 
-// Check MongoDB connection
-db.on("error", console.error.bind(console, "MongoDB connection error:"));
-db.once("open", () => {
-  console.log("Connected to MongoDB");
+const PORT = Number(process.env.PORT ?? 8000);
+const { MONGO_URL } = process.env;
+const LOGGING_SERVICE_URL = process.env.LOGGING_SERVICE_URL ?? 'http://loggingservice-srv:8004/log';
+
+if (!MONGO_URL) {
+  console.error('MONGO_URL is not set. See .env.example.');
+  process.exit(1);
+}
+
+await mongoose.connect(MONGO_URL);
+console.log('Connected to MongoDB');
+
+const app = createApp({
+  User,
+  hash: bcrypt.hash,
+  compare: bcrypt.compare,
+  log: createLogger(LOGGING_SERVICE_URL),
 });
 
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(bodyParser.json());
-
-import userRouter from "./routes/userRoute.js";
-
-app.use("/api/user", userRouter);
-
-app.listen(port, () => {
-  console.log(`Server is running on http://localhost:${port}`);
+app.listen(PORT, () => {
+  console.log(`User service running on port ${PORT}`);
 });

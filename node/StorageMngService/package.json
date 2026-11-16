@@ -1,22 +1,21 @@
 {
-  "name": "storageserv",
+  "name": "storagemngservice",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Keeps each user's total stored bytes (10 MB limit enforced by the Photos service).",
+  "type": "module",
   "scripts": {
-    "start": "node --watch index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "node --test"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
     "axios": "^1.6.3",
-    "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "mongoose": "^8.0.3"
   },
-  "type": "module"
+  "devDependencies": {
+    "supertest": "^7.3.2"
+  }
 }

@@ -1,36 +1,29 @@
-import express from "express";
-import http from "http";
-import bodyParser from "body-parser";
-import cors from "cors";
-import dotenv from "dotenv";
-import mongoose from "mongoose";
+/** Entry point: connects to MongoDB and starts the Storage service. */
+import 'dotenv/config';
 
-dotenv.config();
+import mongoose from 'mongoose';
 
-const app = express();
-app.use(cors());
-app.use(bodyParser.json());
+import { createApp } from './app.js';
+import { createLogger } from './logClient.js';
+import { addNewStorage, getStorageByUserId, updateStorageByUserId } from './model/storage.js';
 
-const server = http.createServer(app);
-server.listen(8002, () => {
-  console.log("Server running on http://localhost:8002/");
+const PORT = Number(process.env.PORT ?? 8002);
+const { MONGO_URL } = process.env;
+const LOGGING_SERVICE_URL = process.env.LOGGING_SERVICE_URL ?? 'http://loggingservice-srv:8004/log';
+
+if (!MONGO_URL) {
+  console.error('MONGO_URL is not set. See .env.example.');
+  process.exit(1);
+}
+
+await mongoose.connect(MONGO_URL);
+console.log('Connected to MongoDB');
+
+const app = createApp({
+  store: { getByUser: getStorageByUserId, updateByUser: updateStorageByUserId, add: addNewStorage },
+  log: createLogger(LOGGING_SERVICE_URL),
 });
 
-const MONGO_URL = "";
-
-mongoose.connect(MONGO_URL);
-mongoose.connection.on("error", (error) => console.log(error));
-mongoose.connection.once("open", () => {
-  console.log("Connected to the database");
-});
-
-//import routes
-import storageRoute from "./routes/storageRoute.js";
-
-//use routes
-app.use("/api/storage", storageRoute);
-
-//test route
-app.get("/", (req, res) => {
-  res.send("Hello World! From Storage Service");
+app.listen(PORT, () => {
+  console.log(`Storage service running on port ${PORT}`);
 });

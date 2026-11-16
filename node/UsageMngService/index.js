@@ -1,49 +1,36 @@
-import express from "express";
-import http from "http";
-import bodyParser from "body-parser";
-import cors from "cors";
-import dotenv from "dotenv";
-import mongoose from "mongoose";
-import cron from "node-cron";
-import { usageModel } from "./model/usageModel.js";
+/** Entry point: connects to MongoDB, starts the Usage service and its daily reset job. */
+import 'dotenv/config';
 
-dotenv.config();
+import mongoose from 'mongoose';
 
-const app = express();
-app.use(cors());
-app.use(bodyParser.json());
+import { createApp } from './app.js';
+import { scheduleDailyReset } from './dailyReset.js';
+import { createLogger } from './logClient.js';
+import {
+  addNewUsage,
+  getUsageByUserId,
+  updateUsageByUserId,
+  usageModel,
+} from './model/usageModel.js';
 
-const server = http.createServer(app);
-server.listen(8003, () => {
-  console.log("Server running on http://localhost:8003/");
+const PORT = Number(process.env.PORT ?? 8003);
+const { MONGO_URL } = process.env;
+const LOGGING_SERVICE_URL = process.env.LOGGING_SERVICE_URL ?? 'http://loggingservice-srv:8004/log';
+
+if (!MONGO_URL) {
+  console.error('MONGO_URL is not set. See .env.example.');
+  process.exit(1);
+}
+
+await mongoose.connect(MONGO_URL);
+console.log('Connected to MongoDB');
+
+const app = createApp({
+  store: { getByUser: getUsageByUserId, updateByUser: updateUsageByUserId, add: addNewUsage },
+  log: createLogger(LOGGING_SERVICE_URL),
 });
+scheduleDailyReset(usageModel);
 
-const MONGO_URL = "";
-mongoose.connect(MONGO_URL);
-mongoose.connection.on("error", (error) => console.log(error));
-mongoose.connection.once("open", () => {
-  console.log("Connected to the database");
-});
-
-//test route
-app.get("/", (req, res) => {
-  res.send("Hello World! From Usage service");
-});
-
-//import routes
-import usageRoute from "./routes/usageRoute.js";
-
-//use routes
-app.use("/api/usage", usageRoute);
-
-//
-cron.schedule("0 0 * * *", async () => {
-  try {
-    // Update all documents in the collection
-    await usageModel.updateMany({}, { $set: { totalUsage: 0 } });
-
-    console.log("Daily update completed.");
-  } catch (error) {
-    console.error("Error updating thresholdRemaining:", error);
-  }
+app.listen(PORT, () => {
+  console.log(`Usage service running on port ${PORT}`);
 });

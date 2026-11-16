@@ -1,16 +1,11 @@
-import { createNewStorage, storageByUserId, updatingStorageByUserId } from '../controller/storageController.js';
-import express from 'express';
+/** Routes of the Storage service, mounted at /api/storage. */
+import { Router } from 'express';
 
-const router = express.Router(); // "api/storage"
-
-// get storage by user id
-router.get('/user/:userId', storageByUserId);
-
-// update storage by user id
-router.put('/user/:userId', updatingStorageByUserId);
-
-// create new storage
-router.post('/', createNewStorage);
-
-
-export default router;
+/** @param {object} controller handlers from createStorageController */
+export function createStorageRouter(controller) {
+  const router = Router();
+  router.get('/user/:userId', controller.getByUser);
+  router.put('/user/:userId', controller.updateByUser);
+  router.post('/', controller.create);
+  return router;
+}
